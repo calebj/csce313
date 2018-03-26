@@ -20,6 +20,12 @@
 */
 
 /*--------------------------------------------------------------------------*/
+/* DEFINES */
+/*--------------------------------------------------------------------------*/
+
+#define MAX(a, b) (((a) > (b)) ? (a) : (b))
+
+/*--------------------------------------------------------------------------*/
 /* INCLUDES */
 /*--------------------------------------------------------------------------*/
 
@@ -44,9 +50,11 @@
 
 #include <list>
 #include <vector>
+#include <map>
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 //#include <errno.h>
 #include <cerrno>
 #include <unistd.h>
@@ -59,6 +67,7 @@
 
 // Vector of shared pointers, because there's no copy or move for std::atomic
 using counter_vector_t = std::vector<std::shared_ptr<std::atomic_int>>;
+using counter_map_t = std::map<std::string, counter_vector_t>;
 
 /*--------------------------------------------------------------------------*/
 /* DATA STRUCTURES */
@@ -74,6 +83,19 @@ using counter_vector_t = std::vector<std::shared_ptr<std::atomic_int>>;
 atomic_standard_output threadsafe_console_output;
 
 /*--------------------------------------------------------------------------*/
+/* CONSTANTS */
+/*--------------------------------------------------------------------------*/
+
+const int NUM_BINS = 10,
+          MIN_COL_W = 5;
+
+const std::vector<std::string> NAMES = {
+    "John Smith",
+    "Jane Smith",
+    "Joe Smith"
+};
+
+/*--------------------------------------------------------------------------*/
 /* HELPER FUNCTIONS */
 /*
     You may add any helper functions you like, or change the provided functions, 
@@ -87,39 +109,43 @@ T1 accumulate_shptrs(const T1& base, const std::shared_ptr<T2>& elem) {
     return base + *elem;
 }
 
-/*
-    This function is provided for your convenience. If you choose not to use it,
-    your final display should still be a histogram with bin size 10.
-*/
-std::string make_histogram_table(const std::string& name1,
-                                 const std::string& name2,
-                                 const std::string& name3,
-                                 const counter_vector_t& data1,
-                                 const counter_vector_t& data2,
-                                 const counter_vector_t& data3) {
+std::string make_histogram_table(counter_map_t& counters) {
     std::stringstream tablebuilder;
+    std::map<std::string, int> widths;
 
-    tablebuilder << std::setw(21) << std::right << name1;
-    tablebuilder << std::setw(15) << std::right << name2;
-    tablebuilder << std::setw(15) << std::right << name3 << std::endl;
-
-    for (uint i = 0; i < data1.size(); ++i) {
-        tablebuilder << std::setw(6) << std::left
-                     << std::to_string(i * 10) + "-" + std::to_string((i * 10) + 9)
-                     << std::setw(15) << std::right << *data1.at(i)
-                     << std::setw(15) << std::right << *data2.at(i)
-                     << std::setw(15) << std::right << *data3.at(i)
-                     << std::endl;
+    int tmpw;
+    for (const auto& x : counters) {
+        tmpw = x.second.size();
+        widths[x.first] = MAX(tmpw, MIN_COL_W) + 3;
     }
 
-    tablebuilder << std::setw(6) << std::left << "Total"
-                 << std::setw(15) << std::right
-                 << accumulate(data1.begin(), data1.end(), 0, accumulate_shptrs<int, std::atomic_int>)
-                 << std::setw(15) << std::right
-                 << accumulate(data2.begin(), data2.end(), 0, accumulate_shptrs<int, std::atomic_int>)
-                 << std::setw(15) << std::right
-                 << accumulate(data3.begin(), data3.end(), 0, accumulate_shptrs<int, std::atomic_int>)
-                 << std::endl;
+    tablebuilder << std::setw(5) << std::left << "Bin";
+
+    for (const auto& x : counters) {
+        tablebuilder << std::setw(widths[x.first]) << std::right << x.first;
+    }
+
+    tablebuilder << std::endl;
+
+    for (uint i = 0; i < NUM_BINS; ++i) {
+        tablebuilder << std::right << std::setfill('0') << std::setw(2) << std::to_string(i * 10)
+                     << "-"
+                     << std::right << std::setfill('0') << std::setw(2) << std::to_string((i * 10) + 9)
+                     << std::setfill(' ');
+
+        for (const auto& x : counters) {
+            tablebuilder << std::right << std::setw(widths[x.first]) << *x.second.at(i);
+        }
+
+        tablebuilder << std::endl;
+    }
+
+    tablebuilder << std::setw(5) << std::left << "Total";
+
+    for (const auto& x : counters) {
+        tablebuilder << std::setw(widths[x.first]) << std::right
+                     << accumulate(x.second.begin(), x.second.end(), 0, accumulate_shptrs<int, std::atomic_int>);
+    }
 
     return tablebuilder.str();
 }
@@ -133,9 +159,7 @@ void request_thread_function(SafeBuffer& buf, int count,
 void worker_thread_function(
     RequestChannel* chan,
     SafeBuffer& request_buffer,
-    counter_vector_t& john_frequency_count,
-    counter_vector_t& jane_frequency_count,
-    counter_vector_t& joe_frequency_count)
+    counter_map_t& counters)
 {
 
     std::string s = chan->send_request("newthread");
@@ -143,22 +167,20 @@ void worker_thread_function(
 
     while(request_buffer.size()) {
         std::string request = request_buffer.retrieve_front();
-        std::string response = workerChannel->send_request(request);
 
-        if(request == "data John Smith") {
-            *john_frequency_count.at(stoi(response) / 10) += 1;
-        }
-        else if(request == "data Jane Smith") {
-            *jane_frequency_count.at(stoi(response) / 10) += 1;
-        }
-        else if(request == "data Joe Smith") {
-            *joe_frequency_count.at(stoi(response) / 10) += 1;
-        }
-        else if(request == "quit") {
+        if (request == "quit") {
             break;
+        } else {
+            std::string response = workerChannel->send_request("data " + request);
+            auto search = counters.find(request);
+
+            if(search != counters.end()) {
+                *search->second.at(stoi(response) / NUM_BINS) += 1;
+            }
         }
     }
 
+    workerChannel->send_request("quit");
     delete workerChannel;
 }
 
@@ -212,15 +234,21 @@ int main(int argc, char * argv[]) {
         std::cout << "done." << std::endl;
 
         SafeBuffer request_buffer;
-        counter_vector_t john_frequency_count,
-                         jane_frequency_count,
-                         joe_frequency_count;
+        counter_map_t counters;
 
         // Initialize counters with zeros
-        for(int i = 0; i < 10; i++) {
-            john_frequency_count.emplace_back(new std::atomic_int(0));
-            jane_frequency_count.emplace_back(new std::atomic_int(0));
-            joe_frequency_count.emplace_back(new std::atomic_int(0));
+        for (const auto& name : NAMES) {
+            #ifdef TAMU_COMPUTE
+            counter_vector_t counter;
+            for (int i = 0; i < NUM_BINS; i++)
+                counter.emplace_back(new std::atomic_int(0));
+            counters[name] = counter;
+            #else
+            counters.emplace(name, 0);
+            counter_vector_t& counter = counters[name];
+            for (int i = 0; i < NUM_BINS; i++)
+                counter.emplace_back(new std::atomic_int(0));
+            #endif
         }
 
 /*--------------------------------------------------------------------------*/
@@ -230,14 +258,13 @@ int main(int argc, char * argv[]) {
         std::cout << "Populating request buffer... " << std::flush;
 
         {
-            static std::vector<std::string> names = {"John", "Jane", "Joe"};
             std::vector<std::thread> populate_threads;
 
             // Create buffer-fill threads
-            for (const auto& x : names)
+            for (const auto& name : NAMES)
                 populate_threads.emplace_back(request_thread_function,
                                             std::ref(request_buffer), n,
-                                            "data " + x + " Smith");
+                                            name);
 
             // wait for them to complete
             for (auto& th : populate_threads) 
@@ -266,11 +293,9 @@ int main(int argc, char * argv[]) {
             std::vector<std::thread> worker_threads(w);
             for (int i = 0; i < w; i++) {
                 worker_threads[i] = std::thread(worker_thread_function,
-                                            chan,
-                                            std::ref(request_buffer),
-                                            std::ref(john_frequency_count),
-                                            std::ref(jane_frequency_count),
-                                            std::ref(joe_frequency_count));
+                                                chan,
+                                                std::ref(request_buffer),
+                                                std::ref(counters));
             }
 
             // wait for them to complete
@@ -292,14 +317,7 @@ int main(int argc, char * argv[]) {
 /*  END CRITICAL SECTION                                                    */
 /*--------------------------------------------------------------------------*/
 
-        std::string histogram_table = make_histogram_table(
-            "John Smith",
-            "Jane Smith",
-            "Joe Smith",
-            john_frequency_count,
-            jane_frequency_count,
-            joe_frequency_count
-        );
+        std::string histogram_table = make_histogram_table(counters);
 
         std::cout << "Results for n == " << n << ", w == " << w << std::endl
                   << histogram_table << std::endl
@@ -327,12 +345,16 @@ int main(int argc, char * argv[]) {
         }
 
         std::cout << "Sleeping..." << std::endl;
-        usleep(10000);
+        usleep(100000);
 
         std::string finale = chan->send_request("quit");
         delete chan;
     }
 
-    else if (pid == 0)
+    else if (pid == 0) {
         execl("dataserver", (char*) nullptr);
+    }
+
+    int status;
+    waitpid(pid, &status, 0);
 }

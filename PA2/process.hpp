@@ -9,6 +9,7 @@
 #include <utility>
 #include <deque>
 #include <memory>
+#include <deque>
 
 #include <sys/types.h>
 #include <unistd.h>
@@ -17,6 +18,8 @@
 // Forward declarations
 class ProcessFlow;
 class ProcessController;
+
+using dirstack_t = std::deque<std::string>;
 
 // Represents a process
 class Subprocess {
@@ -78,6 +81,7 @@ public:
     void enqueue_job(std::shared_ptr<ProcessFlow> flow, bool background = false);
     std::shared_ptr<ProcessFlow> get_job(int job_id) const;
     const std::vector<std::shared_ptr<ProcessFlow>>& get_jobs() const { return _jobs; }
+    dirstack_t& get_dirstack() { return _dirstack; }
     const bool is_background_pid(int pid) const;
 
     void run();
@@ -88,6 +92,7 @@ public:
 private:
     // Holds jobs while parsing. Second value in pair is background flag.
     std::deque<std::pair<std::shared_ptr<ProcessFlow>, bool>> _pending;
+    dirstack_t _dirstack;
 
     std::vector<std::shared_ptr<ProcessFlow>>
         _flows, // Foreground commands in order
